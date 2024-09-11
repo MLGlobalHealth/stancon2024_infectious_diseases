@@ -1,0 +1,212 @@
+---
+title: |
+  ![](images/stan_logo.png){height=14mm}
+  ![](images/turing.svg){height=14mm}
+  ![](images/MLGHN_Logo_colour.png){height=16mm}
+  ![](images/bristol.png){height=16mm}
+  <br><br>
+  Introduction to infectious disease modelling tutorial: Hawkes Process models
+subtitle: 'StanCon 2024'
+author: "<br>Ettie Unwin<br>"
+#output: html_document
+output: 
+  bookdown::html_document2:
+    toc: TRUE
+    toc_float: TRUE
+    highlight: tango
+  bookdown::pdf_book:
+    keep_tex: yes
+date: "2024-02-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This tutorial is loosely based on the idea [here](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1008830) to using Hawkes Processes to model infectious diseases. This work is licensed under a [Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International License](https://creativecommons.org/licenses/by-nc-nd/4.0/).
+
+[Hawkes Processes](https://arxiv.org/abs/1708.06401) are mathematically well founded statistical point process, where the intensity $\lambda$
+
+\begin{equation}
+\lambda = \mu + \sum_{t>t_i} \phi(t-t_i).
+\end{equation}
+
+Here $\mu$ is a contribution to the intensity from the background - in the case of infectious diseases this could be cases imported from a region outside your area of interest or spillover from an animal reservoir - and $\phi$ is the self exciting kernel that describes person to person infection. There are many options for how to parameterise $\mu$ and $\phi$ but for ease we will keep $\mu$ to be a fixed constant and $\phi$ to be an exponential kernel.This means there is a constant chance of an infection to be caused by the background and a person is most infectious at the point of infection (this assumption can be relaxed by using a [Rayleigh kernel](https://en.wikipedia.org/wiki/Rayleigh_distribution)).
+
+One benefit of the Hawkes Process is that it is often possible to write down the likelihood analytically. If
+\begin{equation}
+\lambda = \mu + \sum_{t>t_i} \alpha e^{-\delta(t-t_i)},
+\end{equation}
+
+then our log-likelihood $\ell(\alpha, \delta, \mu)$
+
+\begin{equation}
+\ell(\alpha, \delta, \mu) = \frac{\alpha}{\delta}\sum_{i=1}^{n}(e^{-\delta(T-t_i)} - 1) - \mu T + \sum_{i=1}^{N}\log (\mu + \sum_{j=1}^{i-1}\alpha e^{t_i - t_j}).
+\end{equation}
+
+This type of model is useful if you have line list data. This means you have a line in your data for each patient including times that they developed symptoms, got a test and maybe some demographics like their age, sex and location.
+
+You can code up your likelihood in the functions block of the stan model file. Here is an un-optimised implementation - I would be delighted with an optimised version if anyone is interested enough to create one!
+```{x functions, eval = FALSE}
+functions {
+  
+  real log_likelihood(real mu, real alpha, real delta, vector events_list, int N, real max_T){
+
+        // first term
+
+        vector[N] differences_from_max_T = max_T - events_list;
+        vector[N] summands = exp(-delta * differences_from_max_T) - 1;
+
+        vector[N] within_max_T_Mask = non_negative_mask(differences_from_max_T);
+        summands = summands .* within_max_T_Mask;
+
+        real first = mu * max_T - (alpha / delta) * sum(summands);
+
+        // second term
+
+        matrix[N, N] differences_mat = self_differences(events_list);
+        matrix[N, N] inner_sum_mat = exp(-delta * differences_mat);
+        inner_sum_mat = zero_above_diagonal(inner_sum_mat);
+
+        vector[N] term_inside_log = mu + alpha * rowsum(inner_sum_mat);
+
+        vector[N] second_sum_terms = log(term_inside_log);
+
+        real second = sum(second_sum_terms);
+
+        return -first + second;
+  }
+  
+    matrix zero_above_diagonal(matrix input_mat){
+        int N = rows(input_mat);
+        matrix[N, N] output_mat;
+
+        for (i in 1:N) {
+            for (j in 1:N) {
+                if (j >= i) {
+                   output_mat[i, j] = 0;
+                } else {
+                   output_mat[i, j] = input_mat[i, j];
+                }
+            }
+        }
+
+        return output_mat;
+    }
+
+    vector rowsum(matrix input_mat){
+        int M = cols(input_mat);
+        vector[M] v = rep_vector(1.0, M);
+
+        return input_mat * v;
+    }
+
+    vector non_negative_mask(vector input_vec){
+        int N = num_elements(input_vec);
+        vector[N] output_vec;
+
+        for (i in 1:N) {
+            output_vec[i] = input_vec[i] > 0;
+        }
+
+        return output_vec;
+    }
+
+    matrix self_differences(vector input_vec){
+        int N = num_elements(input_vec);
+
+        row_vector[N] rv = input_vec';
+
+        matrix[N, N] output_mat = rep_matrix(input_vec, N) - rep_matrix(rv, N);
+
+        return output_mat;
+    }
+
+    
+}
+
+```
+
+Then we also need to define the data block of the model file. Here we say we are fitting to a list of events times (event_list) with length N and maximum time max_T:
+```{r data, eval = FALSE}
+data {
+    int<lower=0> N;
+    vector[N] events_list;
+    real max_T;
+}
+```
+
+We have three parameters in our model $\alpha$ which controls the magnitude of the infectious profile, $\delta$ which controls the duration of the infectious period and $\mu$ which controls the background infection rate:
+```{r params, eval = FALSE}
+parameters {
+    real mu;
+    real <lower=0> alpha;
+    real <lower=0> delta;
+}
+```
+
+Finally we can define our model and choose priors. Here we have assumed that our parameters are normally distributed for ease, but these can be carefully considered.
+```{r model, eval = FALSE}
+model {
+    mu ~ normal(0.5 , 1 );
+    alpha ~ normal(0.4 , 0.1 );
+    delta ~ normal(0.5 , 1 );
+
+    target += log_likelihood(mu, alpha, delta, events_list, N, max_T);
+}
+```
+
+Now we can fit our Hawkes Process model to some line list data. Here we are using a simulated dataset where the period a person remains infectious for is about 10 days. This is plausible for diseases.
+
+
+```{r fit}
+library(rstan)
+library(bayesplot)
+
+mc.cores = parallel::detectCores()
+rstan_options(auto_write = TRUE)
+
+# read in data
+events = readRDS("data/hawkes.RDS")
+
+# data for Stan
+data <- list(N = length(events), 
+             events_list = events,
+             max_T = max(events))
+
+# number of MCMC steps
+niter <- 5000
+
+model <- stan_model("stan_models/exp_hawkes.stan")
+
+fit <- sampling(model,
+                data = data,
+                iter = niter,
+                chains = 4,
+                seed = 0)
+
+print(summary(fit))
+```
+
+One problem with Hawkes Processes are that the $\alpha$ and $\delta$ parameters are highly correlated as you can see with the pairs plot.
+
+```{r pairs}
+pairs(fit, pars = c("mu", "alpha", "delta"))
+```
+
+We can see that despite this, our chains are mixing ok.
+
+```{r traceplot}
+traceplot(fit)
+```
+
+We can now explore the posterior distributions for our distribution which enable us to determine values for the parameters in our model.
+
+```{r posterior}
+
+posterior <- as.matrix(fit)
+p <- mcmc_areas(posterior[,1:3],
+                prob = 0.95) 
+print(p)
+
+```
