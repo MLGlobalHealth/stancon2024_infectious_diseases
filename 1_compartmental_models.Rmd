@@ -430,13 +430,45 @@ The number of infected people in a population is not the only type of data colle
 incidence = readRDS("data/incidence_seir.RDS")
 ```
 
-We now need to change our model to fit the incidence from our model to the data rather than the prevalence. First we need to calculate the incidence, which is equal to the number of people leaving the exposed component or $\gamma E$.  
+We now need to change our model to fit the incidence from our model to the data rather than the prevalence. First we need to calculate the incidence, which is equal to the number of people leaving the exposed component each day.  We can calculate this from our compartmental model by considering the daily change in cumulative incidence.
 
-Q6) Make a new copy of our SEIR model by re-saving ```seir_prevalence.stan``` as ```seir_incidence.stan```. The incidence can be calculated by changing the transformed parameters block to be as follows (note only the for loop around the incidence should have changed).
+The cumulative incidence, $C$ can be calculated by adding an additional differential equation to our model block.
+$$
+\frac{dC}{dt} = \gamma E.
+$$
+Then the incidence can be calculated by integrating this equation over each day
+$$
+C = \int_{t-1}^{t}\gamma E dt.
+$$
+You can assume that $t_0$ is equal to zero.
+
+Q6) Make a new copy of our SEIR model by re-saving ```seir_prevalence.stan``` as ```seir_incidence.stan```. The incidence can be calculated by first calculating the adding in the differential equation and then changing the transformed parameters block as follows (note only the for loop around the incidence should have changed). You will also need to add an initial condition for this parameter.
 
 ```{r incidence transformed, eval=FALSE}
+functions {
+  real[] sir(real t, real[] y, real[] theta, 
+             real[] x_r, int[] x_i) {
+
+      real S = y[1];
+      real I = y[2];
+      real R = y[3];
+      real N = x_i[1];
+      
+      real beta = theta[1];
+      real sigma = theta[2];
+      
+      #TODO: fill it in.
+      real dS_dt =
+      real dE_dt =
+      real dI_dt =  
+      real dR_dt =  
+      real dC_dt = 
+      
+      return {dS_dt, dI_dt, dR_dt, dC_dt};
+  }
+
 transformed parameters{
-  real y[n_days, 3];
+  real y[n_days, 5];
   real phi = 1. / phi_inv;
   real theta[2]; // model parameters
   real incidence[n_days];
@@ -445,8 +477,9 @@ transformed parameters{
   theta[2] = sigma;
 
   y = integrate_ode_rk45(sir, y0, t0, ts, theta, x_r, x_i);
-  for (i in 1:n_days)
-    incidence[i] = gamma * y[i, 2];
+  incidence[1] = y[1, 5]
+  for (i in 2:n_days)
+    incidence[i] = y[i, 5] - y[i-1, 5];
 }
 
 ```
@@ -472,7 +505,8 @@ i0 <- 1
 s0 <- N - i0
 e0 <- 0
 r0 <- 0
-y0 = c(S = s0, E = e0, I = i0, R = r0)
+c0 <- 0
+y0 = c(S = s0, E = e0, I = i0, R = r0, C = c0)
 
 # data for Stan
 data_sir <- list(n_days = n_days, y0 = y0, t0 = t0,
@@ -516,9 +550,11 @@ params <- lapply(t, function(i){sprintf("y[%s,3]", i)}) #total number infected
 smr_y <- as.data.frame(summary(fit_sir_negbin,
                                pars = params, probs = c(0.05, 0.5, 0.95))$summary)
 colnames(smr_y) <- make.names(colnames(smr_y)) # to remove % in the col names
+dat2 = data.frame(t = 1:13)
+dat2$infected = c(infected[-1])
 print(ggplot(smr_y, mapping = aes(x = t)) +
   geom_ribbon(aes(ymin = X5., ymax = X95.), fill = c_posterior, alpha = 0.35) +
   geom_line(mapping = aes(x = t, y = X50.), color = c_posterior) +
-  geom_point(mapping = aes(y = infected)) +
+  geom_point(data = dat2, mapping = aes(y = infected)) +
   labs(x = "Day", y = "Number of infected") + theme_bw())
 ```

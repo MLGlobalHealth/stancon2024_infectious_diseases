@@ -15,14 +15,15 @@ functions {
     real dE_dt = beta * I * S / N - gamma * E;
     real dI_dt =  gamma * E - sigma * I;
     real dR_dt =  sigma * I;
+    real dC_dt = gamma * E;
 
-    return {dS_dt, dE_dt, dI_dt, dR_dt};
+    return {dS_dt, dE_dt, dI_dt, dR_dt, dC_dt};
   }
 }
 
 data {
   int<lower=1> n_days;
-  real y0[4];
+  real y0[5];
   real t0;
   real ts[n_days];
   int N;
@@ -42,7 +43,7 @@ parameters {
 }
 
 transformed parameters{
-  real y[n_days, 4];
+  real y[n_days, 5];
   real phi = 1. / phi_inv;
   real incidence[n_days];
   real theta[3]; // model parameters
@@ -53,17 +54,18 @@ transformed parameters{
 
   y = integrate_ode_rk45(seir, y0, t0, ts, theta, x_r, x_i);
 
-  for (i in 1:n_days)
-    incidence[i] = gamma * y[i, 2];
+  incidence[1] = y[1, 5];
+  for (i in 2:n_days)
+    incidence[i] = y[i, 5] - y[i-1, 5];
 
 }
 
 model {
   //priors
-  beta ~ normal(4, 0.5); //truncated at 0 2,1
-  gamma ~ normal(0.5, 0.1); //truncated at 0
-  sigma ~ normal(0.4, 0.1); //truncated at 0
-  phi_inv ~ exponential(50);
+  beta ~ normal(4, 2); //truncated at 0 2,1
+  gamma ~ normal(0.9, 0.3); //truncated at 0
+  sigma ~ normal(0.5, 0.25); //truncated at 0
+  phi_inv ~ exponential(5);
 
   //likelihood
   cases ~ neg_binomial_2(incidence, phi);
